@@ -544,8 +544,7 @@ def render_dashboard(model, hist_df: pd.DataFrame):
             st.cache_data.clear() # بيمسح الداتا القديمة
             st.rerun() # بيعمل تشغيل جديد للداشبورد ونزول داتا فورية
             
-        st.caption("Flood Early Warning System\nEngineered by Eng. Mustafa Zalam")
-
+        st.markdown(f"""<div style="font-family:'Cairo',sans-serif; font-size:0.62rem; color:#1E3A5F; text-align:center; padding:0.3rem 0 1rem 0;">Flood Early Warning System &nbsp;|&nbsp; Engineered by Eng. Mustafa Zalam &nbsp;|&nbsp; {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>""", unsafe_allow_html=True)
     # تطبيق الفلترة
     if start_date and end_date:
         df_filtered = combined[(combined["timestamp"] >= start_date) & (combined["timestamp"] < end_date)].copy()
