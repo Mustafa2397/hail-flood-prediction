@@ -538,7 +538,13 @@ def render_dashboard(model, hist_df: pd.DataFrame):
                 start_date = pd.to_datetime(date_range[0]); end_date = pd.to_datetime(date_range[1]) + timedelta(days=1)
 
         st.markdown("---")
-        st.caption("نظام الإنذار المبكر للسيول Eng/ Mustafa Zalam ")
+        
+        # ═══ الزرار السحري للتحديث الفوري ═══
+        if st.button("🔄 تحديث البيانات اللحظية الآن", use_container_width=True):
+            st.cache_data.clear() # بيمسح الداتا القديمة
+            st.rerun() # بيعمل تشغيل جديد للداشبورد ونزول داتا فورية
+            
+        st.caption("Flood Early Warning System\nEngineered by Eng. Mustafa Zalam")
 
     # تطبيق الفلترة
     if start_date and end_date:
