@@ -250,6 +250,26 @@ section[data-testid="stSidebar"] label {
 #MainMenu, footer, header { visibility: hidden; }
 .stDeployButton { display: none; }
 hr { border: none; border-top: 1px solid #1A3050; margin: 1.2rem 0; }
+.eng-warning {
+    background-color: rgba(255, 214, 0, 0.08);
+    border-right: 4px solid #FFD600;
+    border-radius: 6px;
+    padding: 12px 15px;
+    margin-bottom: 15px;
+    font-family: 'Cairo', sans-serif;
+    font-size: 0.85rem;
+    color: #FFD600;
+    direction: rtl;
+    text-align: right;
+    line-height: 1.7;
+}
+.eng-warning span {
+    display: inline-block;
+    direction: ltr;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    margin: 0 2px;
+}
 </style>
 """
 
@@ -518,7 +538,7 @@ def render_dashboard(model, hist_df: pd.DataFrame):
                 start_date = pd.to_datetime(date_range[0]); end_date = pd.to_datetime(date_range[1]) + timedelta(days=1)
 
         st.markdown("---")
-        st.caption("نظام الإنذار المبكر للسيول\ Eng/ Mustafa Zalam ")
+        st.caption("نظام الإنذار المبكر للسيول Eng/ Mustafa Zalam ")
 
     # تطبيق الفلترة
     if start_date and end_date:
@@ -582,8 +602,11 @@ def render_dashboard(model, hist_df: pd.DataFrame):
   
     # ── Vulnerability Assessment ──────────────────────────
     st.markdown('<div class="section-title">تقييم نقاط الضعف العمرانية (تحليل احتمالي)</div>', unsafe_allow_html=True)
-    st.caption("⚠️ تنبيه هندسي: بناءً على غياب بيانات الارتفاعات الرقمية (DEM) وشبكات التصريف، يعتمد هذا التقييم على الاستقراء الهيدرولوجي والخبرة التاريخية لمسارات السيول في المنطقة.")
-    
+    st.markdown("""
+    <div class="eng-warning">
+        ⚠️ تنبيه هندسي: بناءً على غياب بيانات الارتفاعات الرقمية (<span>DEM</span>) وشبكات التصريف، يعتمد هذا التقييم على الاستقراء الهيدرولوجي والخبرة التاريخية لمسارات السيول في المنطقة.
+    </div>
+    """, unsafe_allow_html=True)
     if peak_flood_pct >= 20:
         if peak_flood_pct >= 80:
             affected_areas = [
@@ -611,7 +634,7 @@ def render_dashboard(model, hist_df: pd.DataFrame):
     else:
         st.success("✅ الظروف الجوية الحالية لا تستدعي إجراءات وقائية للبنية التحتية أو الشوارع.")
 
-    # ── Metric cards ────────────────────────────────────────────────────
+       # ── Metric cards ────────────────────────────────────────────────────
     st.markdown('<div class="section-title">الظروف الحالية <span style="color:#D50000; font-size:0.7rem; vertical-align:middle;">● مباشر (LIVE)</span></div>', unsafe_allow_html=True)
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -620,27 +643,38 @@ def render_dashboard(model, hist_df: pd.DataFrame):
     c3.metric("⏱ مجموع 3 ساعات", f"{cur_rain3h:.1f} مم")
     c4.metric("⏱ مجموع 6 ساعات", f"{cur_rain6h:.1f} مم")
     c5.metric("💧 الرطوبة", f"{cur_humid:.1f} %")
-    c6.metric("💨 سرعة الرياح", f"{cur_wind:.1f} كم/س")
+    # إضافة الوحدة hPa عشان الدقة العلمية
+    c6.metric("🔵 الضغط الجوي", f"{cur_press:.1f} hPa")
     
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Charts ──────────────────────────────────────────────────────────
     g_col, r_col = st.columns([1, 2.6])
     with g_col:
-        # تم تعديل العنوان ليعكس أنه يقرأ أقصى ذروة للخطر في الفترة
         st.markdown('<div class="section-title">أقصى مخاطر الفيضان (الذروة)</div>', unsafe_allow_html=True)
         fcolor = risk_color(peak_flood_pct)
         st.plotly_chart(chart_gauge(peak_flood_pct), use_container_width=True, config={"displayModeBar": False})
         
         pc, wc = st.columns(2)
+        # إضافة الوحدة hPa هنا كمان
         pc.metric("🔵 الضغط الجوي", f"{cur_press:.1f} hPa")
         wc.metric("💨 الرياح", f"{cur_wind:.1f} كم/س")
+
+        # ═══ ملء الفراغ بإضافة الإجراءات الموصى بها (Recommendations) ═══
+        st.markdown('<div class="section-title">📌 الإجراءات الموصى بها</div>', unsafe_allow_html=True)
+        if peak_flood_pct >= 80:
+            st.error("🚨 **تنبيه قصوى:** تفعيل صفارات الإنذار، إخلاء الأنفاق فوراً، وتوجيه فرق الدفاع المدني للمناطق المنخفضة.")
+        elif peak_flood_pct >= 60:
+            st.warning("⚠️ **إنذار:** استعداد فرق الطوارئ، إغلاق الأنفاق والشوارع المنخفضة بشكل استباقي.")
+        elif peak_flood_pct >= 40:
+            st.info("💡 **مراقبة:** تكثيف المراقبة في الأودية والمنخفضات الطبوغرافية وتجهيز مضخات المياه.")
+        else:
+            st.success("✅ **أمان:** لا توجد إجراءات وقائية مستعجلة، استمرار الرصد الروتيني.")
 
     with r_col:
         st.markdown('<div class="section-title">هطول الأمطار مقابل مخاطر الفيضان</div>', unsafe_allow_html=True)
         if not df_filtered.empty and "flood_pct" in df_filtered.columns:
             st.plotly_chart(chart_rain_vs_flood(df_filtered), use_container_width=True, config={"displayModeBar": False})
-
     st.markdown('<div class="section-title">الاتجاهات الجوية</div>', unsafe_allow_html=True)
     tc, pc_col = st.columns(2)
     with tc:
