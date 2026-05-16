@@ -25,6 +25,8 @@ import streamlit as st
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 import requests
+import folium
+from streamlit_folium import st_folium
 
 warnings.filterwarnings("ignore")
 
@@ -605,40 +607,69 @@ def render_dashboard(model, hist_df: pd.DataFrame):
         st.markdown(f'<div class="alert-ok">✅ الظروف طبيعية — أقصى مخاطر فيضان في الفترة: {peak_flood_pct:.1f}% ({risk_label(peak_flood_pct)}) &nbsp;|&nbsp; أمطار 3 ساعات: {cur_rain3h:.1f} مم</div>', unsafe_allow_html=True)
 
   
-    # ── Vulnerability Assessment ──────────────────────────
-    st.markdown('<div class="section-title">تقييم نقاط الضعف العمرانية (تحليل احتمالي)</div>', unsafe_allow_html=True)
-    st.markdown("""
-    <div class="eng-warning">
-        ⚠️ تنبيه هندسي: بناءً على غياب بيانات الارتفاعات الرقمية (<span>DEM</span>) وشبكات التصريف، يعتمد هذا التقييم على الاستقراء الهيدرولوجي والخبرة التاريخية لمسارات السيول في المنطقة.
-    </div>
-    """, unsafe_allow_html=True)
-    if peak_flood_pct >= 20:
-        if peak_flood_pct >= 80:
-            affected_areas = [
-                "🚧 الأنفاق وتحت الجسور (أعلى نقاط الخطورة لتجمع المياه المفاجئ)",
-                "🌊 المسالك والشعاب التاريخية الجافة (مجرى السيول الطبيعية)",
-                "🏗️ المخططات السكنية النامية غير المكتملة البنية التحتية",
-                "🛣️ التقاطعات الرئيسية المنخفضة والحي الصناعي"
-            ]
-        elif peak_flood_pct >= 60:
-            affected_areas = [
-                "🚧 مداخل ومخارج الأنفاق والجسور",
-                "🌊 الأحياء المجاورة لمجاري السيول (الأودية الشرقية والغربية)",
-                "🛣️ الشوارع الفرعية غير المزودة بتصريف سيول كافٍ"
-            ]
-        elif peak_flood_pct >= 40:
-            affected_areas = [
-                "🌊 المناطق المنخفضة طبوغرافياً والأراضي غير الممهدة",
-                "🛣️ تقاطعات الطرق التي تفتقر لشبكات صرف مطر كفؤة"
-            ]
-        else:
-            affected_areas = ["🌧️ احتمال تكون برك مائية مؤقتة في المنخفضات الطريقية والمكشوفات"]
-        
-        for area in affected_areas:
-            st.markdown(f"- {area}")
+       # ── Vulnerability Map & Assessment (GIS/DEM Workaround) ──────────────────────────
+    st.markdown('<div class="section-title">تقييم نقاط الضعف العمرانية (تحليل مكاني واحتمالي)</div>', unsafe_allow_html=True)
+    
+    # ربط الخريطة بالتاريخ اللي مختاره العميل
+    if start_date and end_date:
+        date_display = f"الفترة من {start_date.strftime('%Y/%m/%d')} إلى {end_date.strftime('%Y/%m/%d')}"
     else:
-        st.success("✅ الظروف الجوية الحالية لا تستدعي إجراءات وقائية للبنية التحتية أو الشوارع.")
+        date_display = "آخر 24 ساعة"
 
+    # تقسيم الشاشة لنصين (خريطة على اليمين، تفاصيل على اليسار)
+    map_col, text_col = st.columns([1.2, 1])
+
+    with map_col:
+        # إحداثيات تقريبية لأشهر نقاط الضعف في حائل
+        vulnerable_locations = [
+            {"name": "أنفاق الطريق الدائري", "lat": 27.505, "lon": 41.710},
+            {"name": "مجرى شعيب أجا", "lat": 27.525, "lon": 41.680},
+            {"name": "مجرى وادي الحائط", "lat": 27.530, "lon": 41.640},
+            {"name": "الحي الصناعي", "lat": 27.540, "lon": 41.730},
+            {"name": "تقاطعات الملك فهد", "lat": 27.515, "lon": 41.695},
+        ]
+
+        m = folium.Map(location=[27.52, 41.69], zoom_start=12, tiles='CartoDB dark_matter')
+
+        # تحديد لون النقاط بناءً على ذروة الخطر
+        if peak_flood_pct >= 80: dot_color = 'red'
+        elif peak_flood_pct >= 60: dot_color = 'orange'
+        elif peak_flood_pct >= 40: dot_color = 'yellow'
+        elif peak_flood_pct >= 20: dot_color = 'lightblue'
+        else: dot_color = 'green'
+
+        for loc in vulnerable_locations:
+            folium.CircleMarker(
+                location=[loc["lat"], loc["lon"]],
+                radius=8 + (peak_flood_pct / 15),  # حجم النقطة بيكبر مع الخطر
+                popup=f"<b>{loc['name']}</b><br>نسبة الخطر: {peak_flood_pct}%",
+                color=dot_color,
+                fill=True,
+                fill_color=dot_color,
+                fill_opacity=0.7
+            ).add_to(m)
+
+        # تصغير ارتفاع الخريطة عشان مياخدش نص الصفحة
+        st_folium(m, height=300, use_container_width=True)
+
+    with text_col:
+        st.markdown(f"""
+        <div style="font-size:0.85rem; color:#FFD600; direction:rtl; text-align:right; line-height:1.7; margin-bottom:15px; background-color: rgba(255, 214, 0, 0.08); padding: 10px; border-radius: 6px; border-right: 3px solid #FFD600;">
+            ⚠️ تنبيه هندسي: بناءً على غياب بيانات الارتفاعات الرقمية (<span style="display:inline-block; direction:ltr; font-family:'JetBrains Mono',monospace; font-size:0.8rem;">DEM</span>)، تعتمد الخريطة على الاستقراء الهيدرولوجي لتاريخ ({date_display}).
+        </div>
+        """, unsafe_allow_html=True)        
+        # رجوع الكلام المكتوب بس بشكل مظبوط جوه الكولم التاني
+        if peak_flood_pct >= 20:
+            if peak_flood_pct >= 80:
+                st.error("🚨 **خطر حرج على:**\n- الأنفاق وتحت الجسور\n- المسالك والشعاب التاريخية\n- المخططات النامية\n- التقاطعات الرئيسية")
+            elif peak_flood_pct >= 60:
+                st.warning("⚠️ **خطر مرتفع على:**\n- مداخل ومخارج الأنفاق\n- الأحياء المجاورة للأودية\n- الشوارع الفرعية")
+            elif peak_flood_pct >= 40:
+                st.info("💡 **مراقبة:**\n- المنخفضات الطبوغرافية\n- التقاطعات غير المزودة بصرف")
+            else:
+                st.info("🌧️ **احتمال:**\n- تكون برك مائية في المنخفضات")
+        else:
+            st.success("✅ **أمان:** لا توجد إجراءات وقائية مستعجلة، استمرار الرصد الروتيني.")
        # ── Metric cards ────────────────────────────────────────────────────
     st.markdown('<div class="section-title">الظروف الحالية <span style="color:#D50000; font-size:0.7rem; vertical-align:middle;">● مباشر (LIVE)</span></div>', unsafe_allow_html=True)
 
