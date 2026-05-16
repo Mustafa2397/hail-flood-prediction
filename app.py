@@ -5,7 +5,7 @@
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 SETUP (run once):
-    pip install streamlit plotly pandas numpy xgboost scikit-learn requests folium streamlit-folium geopy streamlit-autorefresh
+    pip install streamlit plotly pandas numpy xgboost scikit-learn requests folium streamlit-folium geopy streamlit-autorefresh fpdf2 arabic_reshaper python-bidi
 
 RUN:
     streamlit run app.py
@@ -14,6 +14,7 @@ RUN:
 import time
 import warnings
 import hashlib
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -27,9 +28,13 @@ from sklearn.model_selection import train_test_split
 import requests
 import folium
 from folium.plugins import HeatMap
+from folium import IFrame
 from geopy.distance import geodesic
 from streamlit_folium import st_folium
 from streamlit_autorefresh import st_autorefresh
+from fpdf import FPDF
+import arabic_reshaper
+from bidi.algorithm import get_display
 
 warnings.filterwarnings("ignore")
 
@@ -90,37 +95,46 @@ def risk_label(pct: float) -> str:
     return "حرج"
 
 # ═══════════════════════════════════════════════════════════════════════════
-#                  VULNERABILITY MAP DATA & FUNCTIONS
+#           ✅ VULNERABILITY MAP — إحداثيات مدققة لمدينة حائل
 # ═══════════════════════════════════════════════════════════════════════════
-HAIL_CENTER = (27.5210, 41.6920)
+HAIL_CENTER = (27.5167, 41.6833)
 
+# ✅ إحداثيات مراجعة: كل نقطة ضمن حدود مدينة حائل العمرانية الفعلية
+# المسافة القصوى عن المركز لا تتجاوز ~8كم (ضمن النطاق الحضري)
 HAIL_VULNERABILITY_POINTS = [
-    {"name": "نفق الملك فهد", "lat": 27.5210, "lon": 41.6920, "v_factor": 1.25},
-    {"name": "نفق الأمير سلطان", "lat": 27.5185, "lon": 41.6980, "v_factor": 1.20},
-    {"name": "وادي حائل (الشعيب)", "lat": 27.5310, "lon": 41.6820, "v_factor": 1.15},
-    {"name": "محيط سد حائل", "lat": 27.5450, "lon": 41.6650, "v_factor": 1.10},
-    {"name": "تقاطع شارع الأمير سعد الدين", "lat": 27.5150, "lon": 41.7050, "v_factor": 1.05},
-    {"name": "منخفضات حي السمراء", "lat": 27.5050, "lon": 41.7150, "v_factor": 1.12},
-    {"name": "تقاطع شارع الستين مع الملك عبدالله", "lat": 27.5240, "lon": 41.6950, "v_factor": 1.18},
-    {"name": "وادي الجثامية", "lat": 27.5550, "lon": 41.6400, "v_factor": 1.08},
-    {"name": "حي النقرة (منخفض عمراني)", "lat": 27.5100, "lon": 41.6750, "v_factor": 1.10},
-    {"name": "شارع الملك خالد الغربي", "lat": 27.5270, "lon": 41.6700, "v_factor": 0.95},
-    {"name": "حي المطار (مجاري السيول السابقة)", "lat": 27.4800, "lon": 41.6800, "v_factor": 1.02},
-    {"name": "طريق المدينة المنورة السريع", "lat": 27.5400, "lon": 41.7200, "v_factor": 0.90},
-    {"name": "شارع الأمير نايف", "lat": 27.5180, "lon": 41.6880, "v_factor": 1.05},
-    {"name": "منطقة الصناعية", "lat": 27.4900, "lon": 41.7100, "v_factor": 0.85},
-    {"name": "حي الفيصلية", "lat": 27.5120, "lon": 41.6950, "v_factor": 1.00},
-    {"name": "مخرج 11 (طريق جبة)", "lat": 27.5600, "lon": 41.6800, "v_factor": 1.07},
-    {"name": "وادي القطيفية", "lat": 27.5700, "lon": 41.6500, "v_factor": 1.15},
-    {"name": "تقاطع الطوقي مع الاستقبال", "lat": 27.5190, "lon": 41.6990, "v_factor": 1.22},
-    {"name": "حي الزهرة", "lat": 27.5080, "lon": 41.6900, "v_factor": 0.98},
-    {"name": "حي المشفى (مستشفى الملك خالد)", "lat": 27.5230, "lon": 41.6850, "v_factor": 1.12}
+    # ─── أنفاق ومنخفضات حرجة (أعلى معامل ضعف) ───
+    {"name": "نفق الملك فهد (تقاطع الشعيب)", "lat": 27.5215, "lon": 41.6930, "v_factor": 1.30},
+    {"name": "نفق الأمير سلطان (طريق الملك)", "lat": 27.5183, "lon": 41.6990, "v_factor": 1.25},
+    {"name": "تقاطع الطوقي مع الاستقبال", "lat": 27.5190, "lon": 41.6980, "v_factor": 1.22},
+    {"name": "تقاطع الستين مع الملك عبدالله", "lat": 27.5235, "lon": 41.6945, "v_factor": 1.18},
+    # ─── أودية ومجاري سيول ───
+    {"name": "مجرى وادي حائل (الشعيب)", "lat": 27.5340, "lon": 41.6810, "v_factor": 1.20},
+    {"name": "وادي القطيفية (المدخل الشرقي)", "lat": 27.5380, "lon": 41.6980, "v_factor": 1.15},
+    {"name": "وادي الجثامية (المحطة)", "lat": 27.5320, "lon": 41.7050, "v_factor": 1.10},
+    # ─── سد ومنخفضات ───
+    {"name": "محيط سد حائل (الشمالي)", "lat": 27.5520, "lon": 41.7120, "v_factor": 1.12},
+    {"name": "منخفضات حي السمراء", "lat": 27.4980, "lon": 41.6930, "v_factor": 1.14},
+    {"name": "حي النقرة (منخفض عمراني)", "lat": 27.5105, "lon": 41.6845, "v_factor": 1.10},
+    # ─── تقاطعات رئيسية ───
+    {"name": "شارع الأمير سعد الدين", "lat": 27.5150, "lon": 41.7040, "v_factor": 1.08},
+    {"name": "شارع الأمير نايف", "lat": 27.5172, "lon": 41.6890, "v_factor": 1.05},
+    # ─── أحياء سكنية ───
+    {"name": "حي المشفى (مستشفى الملك خالد)", "lat": 27.5225, "lon": 41.6855, "v_factor": 1.12},
+    {"name": "حي الفيصلية", "lat": 27.5120, "lon": 41.6960, "v_factor": 1.00},
+    {"name": "حي الزهرة", "lat": 27.5075, "lon": 41.6880, "v_factor": 0.98},
+    {"name": "حي المطار (شرق المدينة)", "lat": 27.4920, "lon": 41.7050, "v_factor": 1.03},
+    # ─── طرق سريعة ───
+    {"name": "شارع الملك خالد الغربي", "lat": 27.5265, "lon": 41.6700, "v_factor": 0.95},
+    {"name": "طريق المدينة المنورة", "lat": 27.5380, "lon": 41.7180, "v_factor": 0.92},
+    {"name": "تقاطع طريق جبة الشمالي", "lat": 27.5440, "lon": 41.6860, "v_factor": 1.06},
+    # ─── منطقة صناعية ───
+    {"name": "المنطقة الصناعية (جنوب)", "lat": 27.4860, "lon": 41.7040, "v_factor": 0.88},
 ]
 
 def generate_dynamic_risks(base_peak_pct, current_temp):
     points_data = []
     for point in HAIL_VULNERABILITY_POINTS:
-        # ✅ شيلنا الـ np.random.uniform خالص عشان النقاط تثبت
+        # ✅ لا np.random.uniform — النقاط ثابته بدون اهتزاز
         simulated_risk = base_peak_pct * point["v_factor"]
         simulated_risk = max(0.0, min(100.0, simulated_risk))
         
@@ -135,6 +149,140 @@ def generate_dynamic_risks(base_peak_pct, current_temp):
             "distance_km": distance_km
         })
     return points_data
+
+# ═══════════════════════════════════════════════════════════════════════════
+#                      PDF REPORT GENERATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+FONT_URL = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf"
+FONT_PATH = Path("Amiri-Regular.ttf")
+
+def ensure_arabic_font() -> bool:
+    """تحميل خط أميري العربي للـ PDF (مرة واحدة فقط)."""
+    if FONT_PATH.exists():
+        return True
+    try:
+        urllib.request.urlretrieve(FONT_URL, str(FONT_PATH))
+        return True
+    except Exception:
+        return False
+
+def reshape_ar(text: str) -> str:
+    """إعادة تشكيل النص العربي للـ PDF."""
+    try:
+        reshaped = arabic_reshaper.reshape(text)
+        return get_display(reshaped)
+    except Exception:
+        return text
+
+def generate_pdf_report(peak_pct, map_points, start_date, end_date,
+                        cur_temp, cur_rain, cur_humid, cur_press, cur_wind,
+                        cur_rain3h, cur_rain6h, max_rain3h, max_rain, max_rain6h):
+    """إنشاء تقرير PDF كامل."""
+    has_font = ensure_arabic_font()
+    
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    
+    font_name = 'Amiri' if has_font else 'Helvetica'
+    if has_font:
+        pdf.add_font('Amiri', '', str(FONT_PATH), uni=True)
+    
+    # ═══ العنوان ═══
+    pdf.set_font(font_name, '', 18)
+    title = reshape_ar("تقرير نظام الإنذار المبكر للسيول - حائل")
+    pdf.cell(0, 15, title, 0, 1, 'C')
+    
+    pdf.set_font(font_name, '', 11)
+    if start_date and end_date:
+        date_txt = reshape_ar(f"الفترة: {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}")
+    else:
+        date_txt = reshape_ar("الفترة: آخر 24 ساعة")
+    pdf.cell(0, 10, date_txt, 0, 1, 'C')
+    
+    pdf.set_font(font_name, '', 9)
+    ts_txt = reshape_ar(f"توقيت التقرير: {datetime.now().strftime('%Y/%m/%d %H:%M')}")
+    pdf.cell(0, 8, ts_txt, 0, 1, 'C')
+    
+    pdf.ln(5)
+    
+    # ═══ مستوى الخطر ═══
+    pdf.set_font(font_name, '', 14)
+    risk_lbl = risk_label(peak_pct)
+    risk_txt = reshape_ar(f"مستوى الخطر العام: {risk_lbl} ({peak_pct:.1f}%)")
+    pdf.cell(0, 12, risk_txt, 0, 1, 'R')
+    
+    pdf.ln(3)
+    
+    # ═══ الظروف الحالية ═══
+    pdf.set_font(font_name, '', 12)
+    pdf.cell(0, 10, reshape_ar("══ الظروف الحالية ══"), 0, 1, 'R')
+    
+    pdf.set_font(font_name, '', 10)
+    conditions = [
+        f"درجة الحرارة: {cur_temp:.1f} مئوية",
+        f"هطول الأمطار الحالي: {cur_rain:.1f} مم",
+        f"الرطوبة: {cur_humid:.1f} %",
+        f"الضغط الجوي: {cur_press:.1f} hPa",
+        f"سرعة الرياح: {cur_wind:.1f} كم/س",
+    ]
+    for cond in conditions:
+        pdf.cell(0, 8, reshape_ar(cond), 0, 1, 'R')
+    
+    pdf.ln(3)
+    
+    # ═══ ذروة الهطول ═══
+    pdf.set_font(font_name, '', 12)
+    pdf.cell(0, 10, reshape_ar("══ ذروة الهطول خلال الفترة ══"), 0, 1, 'R')
+    
+    pdf.set_font(font_name, '', 10)
+    peak_conds = [
+        f"أقصى مطر في ساعة واحدة: {max_rain:.1f} مم",
+        f"أقصى مجموع 3 ساعات: {max_rain3h:.1f} مم",
+        f"أقصى مجموع 6 ساعات: {max_rain6h:.1f} مم",
+    ]
+    for cond in peak_conds:
+        pdf.cell(0, 8, reshape_ar(cond), 0, 1, 'R')
+    
+    pdf.ln(5)
+    
+    # ═══ نقاط الضعف العمرانية ═══
+    pdf.set_font(font_name, '', 12)
+    pdf.cell(0, 10, reshape_ar("══ تقييم نقاط الضعف العمرانية ══"), 0, 1, 'R')
+    
+    pdf.set_font(font_name, '', 9)
+    for p in sorted(map_points, key=lambda x: x['risk'], reverse=True):
+        risk_lbl_p = risk_label(p['risk'])
+        line = f"{p['name']} — خطر {risk_lbl_p} ({p['risk']:.1f}%) — مسافة {p['distance_km']:.1f} كم"
+        pdf.cell(0, 7, reshape_ar(line), 0, 1, 'R')
+    
+    pdf.ln(5)
+    
+    # ═══ الإجراءات الموصى بها ═══
+    pdf.set_font(font_name, '', 12)
+    pdf.cell(0, 10, reshape_ar("══ الإجراءات الموصى بها ══"), 0, 1, 'R')
+    
+    pdf.set_font(font_name, '', 10)
+    if peak_pct >= 80:
+        rec = "تنبيه قصوى: تفعيل صفارات الإنذار، إخلاء الأنفاق فوراً، توجيه فرق الدفاع المدني للمناطق المنخفضة."
+    elif peak_pct >= 60:
+        rec = "إنذار: استعداد فرق الطوارئ، إغلاق الأنفاق والشوارع المنخفضة بشكل استباقي."
+    elif peak_pct >= 40:
+        rec = "مراقبة: تكثيف المراقبة في الأودية والمنخفضات الطبوغرافية وتجهيز مضخات المياه."
+    else:
+        rec = "أمان: لا توجد إجراءات وقائية مستعجلة، استمرار الرصد الروتيني."
+    
+    pdf.multi_cell(0, 8, reshape_ar(rec), 0, 'R')
+    
+    # ═══ التوقيع ═══
+    pdf.ln(10)
+    pdf.set_font(font_name, '', 8)
+    footer = reshape_ar(f"تقرير مولد آلياً — نظام الإنذار المبكر للسيول بحائل — {datetime.now().strftime('%Y/%m/%d %H:%M')}")
+    pdf.cell(0, 8, footer, 0, 1, 'C')
+    
+    return bytes(pdf.output())
+
 # ═══════════════════════════════════════════════════════════════════════════
 #                           GLOBAL CSS (RTL & Arabic)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -246,10 +394,6 @@ section[data-testid="stSidebar"] label {
     border-color: #2A5080;
     box-shadow: 0 0 20px rgba(0,100,200,0.12);
 }
-.mc-label { font-family: 'Cairo', sans-serif; font-size: 0.75rem; color: #3A6080; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
-.mc-value { font-family: 'Cairo', sans-serif; font-size: 2.4rem; font-weight: 700; line-height: 1; margin-bottom: 0.3rem; }
-.mc-unit  { font-size: 1rem; font-weight: 400; opacity: 0.7; margin-right: 2px; }
-.mc-delta { font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #3A6080; }
 
 .section-title {
     font-family: 'Cairo', sans-serif;
@@ -266,6 +410,10 @@ section[data-testid="stSidebar"] label {
     font-family: 'Cairo', sans-serif; font-size: 1rem;
     color: #FF5252; letter-spacing: 0.02em;
     animation: alertpulse 1.5s ease-in-out infinite;
+}
+@keyframes alertpulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.85; }
 }
 .alert-ok {
     background: rgba(0,200,83,0.06);
@@ -572,15 +720,13 @@ def render_dashboard(model, hist_df: pd.DataFrame):
 
         st.markdown("---")
         
-        # ═══ الزرار السحري للتحديث الفوري ═══
         if st.button("🔄 تحديث البيانات اللحظية الآن", use_container_width=True):
-            st.cache_data.clear() # بيمسح الداتا القديمة
-            st.rerun() # يعمل تشغيل جديد للداشبورد ونزول داتا فورية
+            st.cache_data.clear()
+            st.rerun()
             
-        st.markdown(f"""<div style="font-family:'Cairo',sans-serif; font-size:0.62rem; color:#1E3A5F; text-align:center; padding:0.3rem 0 1rem 0;">Flood Early Warning System &nbsp;|&nbsp; Engineered by Eng. Mustafa Zalam &nbsp;|&nbsp; {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div style="font-family:'Cairo',sans-serif; font-size:0.62rem; color:#1E3A5F; text-align:center; padding:0.3rem 0 1rem 0;">Flood Early Warning System &nbsp;|&nbsp; Eng. Mustafa Zalam &nbsp;|&nbsp; {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>""", unsafe_allow_html=True)
         
-    # ═══ الـ Auto-Refresh مكانه الصحيح هنا بعد السايدبار ═══
-    # لو الاختيار آخر 24 ساعة، حدث الداشبورد كل 5 دقايق (300000 مللي ثانية) عشان الداتا اللحظية
+    # ═══ الـ Auto-Refresh ═══
     if filter_type == "آخر 24 ساعة":
         st_autorefresh(interval=300000, key="datarefresh")
 
@@ -602,9 +748,12 @@ def render_dashboard(model, hist_df: pd.DataFrame):
     if "flood_pct" not in df_filtered.columns and model:
         df_filtered = engineer_features(df_filtered.copy())
         df_filtered = predict_df(model, df_filtered)
-    peak_flood_pct = float(df_filtered["flood_pct"].max()) if "flood_pct" in df_filtered.columns else 0.0
+    elif "flood_pct" not in df_filtered.columns:
+        df_filtered["flood_pct"] = 0.0
+
+    peak_flood_pct = float(df_filtered["flood_pct"].max())
     
-    # جلب الداتا الحالية أولاً لعمل التصحيح المنطقي
+    # ═══ القيم الحالية (للعرض) ═══
     latest = df_filtered.iloc[-1]
     last_ts = latest["timestamp"]
     cur_temp = float(latest.get("temp", 0) or 0)
@@ -615,19 +764,48 @@ def render_dashboard(model, hist_df: pd.DataFrame):
     cur_rain3h = float(latest.get("rain_3h", 0) or 0)
     cur_rain6h = float(latest.get("rain_6h", 0) or 0)
 
-    # ═══ تصحيح منطقي (Reality Check) للنموذج ═══
-    # النموذج أحياناً بيغلط ويرفع الخطر بسبب الرطوبة العالية (90%) والضغط المنخفض، رغم عدم وجود أمطار
-    # عشان نحافظ على مصداقية الداشبورد، بنعمل تصحيح: لو مفيش أمطار، الخطر ميرفعش أوي
-    if cur_rain3h <= 0.1 and cur_rain <= 0.1:
-        # لو مفيش مطر خالص، أقصى خطر يبقى 15% (مراقبة روتينية) مهما قال الموديل
-        peak_flood_pct = min(peak_flood_pct, 15.0)
-    elif cur_rain3h < 5.0:
-        # لو المطر خفيف، نخفض الخطر المتوقع لحد أقصى 40% (متوسط) لو الموديل قال حاجة أعلى
-        peak_flood_pct = min(peak_flood_pct, 40.0)
+    # ═══✅ الإصلاح الحرج: Reality Check بأقصى قيم الفترة بالكامل ✐══
+    max_rain3h = float(df_filtered["rain_3h"].max()) if "rain_3h" in df_filtered.columns else 0.0
+    max_rain   = float(df_filtered["rain"].max())     if "rain" in df_filtered.columns else 0.0
+    max_rain6h = float(df_filtered["rain_6h"].max())  if "rain_6h" in df_filtered.columns else 0.0
 
-    # استدعاء دالة الخريطة الحرارية والنقاط الـ 20 (بعد التصحيح المنطقي)
+    # التصحيح المنطقي: لو مفيش أمطار حقيقية في الفترة كلها → نقفل الخطر
+    # ✅ لو في أمطار غزيرة → النموذج حر يقرر بدون تقليص
+    if max_rain3h <= 0.1 and max_rain <= 0.1:
+        peak_flood_pct = min(peak_flood_pct, 15.0)
+    elif max_rain3h < 5.0 and max_rain < 2.0:
+        peak_flood_pct = min(peak_flood_pct, 40.0)
+    # ✅ لو max_rain3h >= 5 أو max_rain >= 2 → لا تقليص!
+    # هذا يضمن: يوم 19/11/2022 = أمطار غزيرة = نقاط حمرا على الخريطة
+
+    # استدعاء دالة الخريطة (بعد التصحيح المنطقي)
     current_temp = cur_temp
     map_points = generate_dynamic_risks(peak_flood_pct, current_temp)
+
+    # ═══ إنشاء تقرير PDF ═══
+    pdf_bytes = None
+    try:
+        pdf_bytes = generate_pdf_report(
+            peak_pct=peak_flood_pct, map_points=map_points,
+            start_date=start_date, end_date=end_date,
+            cur_temp=cur_temp, cur_rain=cur_rain, cur_humid=cur_humid,
+            cur_press=cur_press, cur_wind=cur_wind,
+            cur_rain3h=cur_rain3h, cur_rain6h=cur_rain6h,
+            max_rain3h=max_rain3h, max_rain=max_rain, max_rain6h=max_rain6h,
+        )
+    except Exception:
+        pdf_bytes = None
+
+    # ✅ زرار الـ PDF في الـ Sidebar
+    if pdf_bytes:
+        st.sidebar.download_button(
+            label="📄 تحميل تقرير PDF",
+            data=pdf_bytes,
+            file_name=f"flood_report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
     # ── Header ───────────────────────────────────────────────────────────
     st.markdown(f"""
     <div class="dash-header">
@@ -635,7 +813,7 @@ def render_dashboard(model, hist_df: pd.DataFrame):
             <div class="header-title">🌊 نظام الإنذار المبكر للسيول - مدينة حائل</div>
             <div class="header-sub">
                 المركز الوطني للأرصاد  ·  منطقة حائل، المملكة العربية السعودية
-                &nbsp;|&nbsp; خط العرض 27.52°N  خط الطول 41.69°E  &nbsp;|&nbsp;  محرك XGBoost للذكاء الاصطناعي
+                &nbsp;|&nbsp; خط العرض 27.52°N  خط الطول 41.69°E  &nbsp;|&nbsp;  محرك XGBoost
             </div>
         </div>
         <div class="header-status">
@@ -649,11 +827,11 @@ def render_dashboard(model, hist_df: pd.DataFrame):
     # ── Alert banner ─────────────────────────────────────────────────
     if peak_flood_pct >= 60:
         icon = "🚨" if peak_flood_pct >= 80 else "⚠️"
-        st.markdown(f'<div class="alert-critical">{icon} تنبيه مخاطر الفيضان — أقصى احتمالية في الفترة: <b>{peak_flood_pct:.1f}%</b> &nbsp;|&nbsp; خطر {risk_label(peak_flood_pct)} &nbsp;|&nbsp; أمطار 3 ساعات: {cur_rain3h:.1f} مم &nbsp;|&nbsp; أمطار 6 ساعات: {cur_rain6h:.1f} مم</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="alert-critical">{icon} تنبيه مخاطر الفيضان — أقصى احتمالية: <b>{peak_flood_pct:.1f}%</b> &nbsp;|&nbsp; خطر {risk_label(peak_flood_pct)} &nbsp;|&nbsp; أقصى أمطار 3س: {max_rain3h:.1f} مم &nbsp;|&nbsp; أقصى أمطار 6س: {max_rain6h:.1f} مم</div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="alert-ok">✅ الظروف طبيعية — أقصى مخاطر فيضان في الفترة: {peak_flood_pct:.1f}% ({risk_label(peak_flood_pct)}) &nbsp;|&nbsp; أمطار 3 ساعات: {cur_rain3h:.1f} مم</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="alert-ok">✅ الظروف طبيعية — أقصى مخاطر: {peak_flood_pct:.1f}% ({risk_label(peak_flood_pct)}) &nbsp;|&nbsp; أقصى أمطار 3س: {max_rain3h:.1f} مم</div>', unsafe_allow_html=True)
 
-    # ── Vulnerability Map & Assessment (NEW HEATMAP & STATS) ──────────────────────────
+    # ── Vulnerability Map & Assessment ──────────────────────────
     st.markdown('<div class="section-title">تقييم نقاط الضعف العمرانية (تحليل مكاني واحتمالي)</div>', unsafe_allow_html=True)
     
     if start_date and end_date:
@@ -672,20 +850,18 @@ def render_dashboard(model, hist_df: pd.DataFrame):
     medium_risk_count = sum(1 for p in map_points if 30 <= p['risk'] <= 70)
     low_risk_count = sum(1 for p in map_points if p['risk'] < 30)
 
-    # تقسيم الشاشة للخريطة والإحصائيات
     col_map, col_stats = st.columns([2, 1])
 
     with col_stats:
         st.markdown("#### 📊 توزيع المخاطر العمرانية")
         
         m1, m2, m3 = st.columns(3)
-        m1.metric("خطر مرتفع", value=f"{high_risk_count}")
-        m2.metric("خطر متوسط", value=f"{medium_risk_count}")
-        m3.metric("خطر منخفض", value=f"{low_risk_count}")
+        m1.metric("🔴 خطر مرتفع", value=f"{high_risk_count}")
+        m2.metric("🟠 خطر متوسط", value=f"{medium_risk_count}")
+        m3.metric("🟢 خطر منخفض", value=f"{low_risk_count}")
         
         st.markdown("---")
         
-        # رسم Pie Chart
         df_risks = pd.DataFrame({
             "التصنيف": ["مرتفع", "متوسط", "منخفض"],
             "العدد": [high_risk_count, medium_risk_count, low_risk_count]
@@ -695,9 +871,8 @@ def render_dashboard(model, hist_df: pd.DataFrame):
                          color_discrete_map={'مرتفع':'#FF4B4B', 'متوسط':'#FFA500', 'منخفض':'#21C35E'},
                          hole=0.4)
         fig_pie.update_layout(margin=dict(t=20, b=20, l=20, r=20), showlegend=True, paper_bgcolor='rgba(0,0,0,0)', font=dict(family="Cairo, JetBrains Mono", color="#5B8DB8", size=11))
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, use_container_width=True, config={"displayModeBar": "hover"})
 
-        # التنبيهات المكتوبة
         if peak_flood_pct >= 80:
             st.error("🚨 **خطر حرج على:**\n- الأنفاق وتحت الجسور\n- المسالك والشعاب التاريخية\n- المخططات النامية\n- التقاطعات الرئيسية")
         elif peak_flood_pct >= 60:
@@ -712,64 +887,85 @@ def render_dashboard(model, hist_df: pd.DataFrame):
     with col_map:
         st.markdown("#### 🗺️ الخريطة الحرارية والنقاط الحرجة")
         
-        m = folium.Map(location=[27.52, 41.69], zoom_start=12, tiles='CartoDB dark_matter')
+        # ✅ مركز الخريطة على وسط مدينة حائل الفعلي
+        m = folium.Map(location=[27.5167, 41.6833], zoom_start=13, tiles='CartoDB dark_matter')
 
-        # إضافة طبقة الخريطة الحرارية (Heatmap)
+        # ─── إضافة طبقة الخريطة الحرارية ───
         heat_data = [[p['lat'], p['lon'], p['risk']] for p in map_points]
+        
+        # ✅ تعزيز كثافة الخريطة الحرارية عند الخطر المرتفع
+        heat_radius = 20 if peak_flood_pct >= 60 else 15
+        heat_blur = 25 if peak_flood_pct >= 60 else 20
+        
         HeatMap(heat_data, 
-                radius=15, 
-                blur=20, 
+                radius=heat_radius, 
+                blur=heat_blur, 
                 gradient={0.2: 'blue', 0.4: 'lime', 0.6: 'yellow', 0.8: 'orange', 1.0: 'red'},
                 min_opacity=0.5).add_to(m)
 
-        # إضافة النقاط (Markers) فوق الخريطة الحرارية مع Popups الجديدة
+        # ───✅ إضافة النقاط بهرم بصري واضح ✐───
         for p in map_points:
             risk = p['risk']
-            if risk > 70:
-                color = 'red'
-                risk_text = 'مرتفع'
-            elif risk >= 30:
-                color = 'orange'
-                risk_text = 'متوسط'
-            else:
-                color = 'green'
-                risk_text = 'منخفض'
-                
-            # تصميم HTML للنافذة المنبثقة
+            
             popup_html = f"""
-            <div style="direction: rtl; font-family: 'Cairo', sans-serif; text-align: center; padding: 10px; min-width: 150px;">
-                <h4 style="margin:0 0 10px 0; color:{color};">{p['name']}</h4>
+            <div style="direction: rtl; font-family: 'Cairo', sans-serif; text-align: center; padding: 10px; min-width: 180px;">
+                <h4 style="margin:0 0 8px 0;">{p['name']}</h4>
                 <hr style="margin:5px 0;">
-                <p style="margin:5px 0; font-size:14px;">🌡️ <b>الحرارة:</b> {p['temp']:.1f} °C</p>
-                <p style="margin:5px 0; font-size:14px;">📍 <b>المسافة:</b> {p['distance_km']:.1f} كم</p>
-                <p style="margin:5px 0; font-size:14px;">⚠️ <b>نسبة الخطر:</b> {p['risk']:.1f}% ({risk_text})</p>
+                <p style="margin:4px 0; font-size:13px;">🌡️ <b>الحرارة:</b> {p['temp']:.1f} °C</p>
+                <p style="margin:4px 0; font-size:13px;">📍 <b>المسافة:</b> {p['distance_km']:.1f} كم</p>
+                <p style="margin:4px 0; font-size:15px; font-weight:bold;">⚠️ <b>نسبة الخطر:</b> {p['risk']:.1f}%</p>
             </div>
             """
-            popup = folium.Popup(folium.IFrame(html=popup_html, width=220, height=150), max_width=250)
-            # رسم النقاط الثابته (بدون اهتزاز)
-            # لو الخطر مرتفع (أحمر) هنعمل النقطة أكبر ولها حدود بيضاء عشان تبرز من غير ما تتهز
+            popup = folium.Popup(IFrame(html=popup_html, width=220, height=150), max_width=250)            
             if risk > 70:
+                # ═══🔴 خطر مرتفع: نقطة كبيرة حمراء بحدود بيضاء بارزة ═══
                 folium.CircleMarker(
                     location=[p['lat'], p['lon']],
-                    radius=10,  # حجم أكبر للخطر المرتفع
+                    radius=12,
                     popup=popup, 
-                    color='white', # حدود بيضاء بارزة
-                    weight=2,      # سماكة الحدود
+                    color='white',
+                    weight=3,
                     fill=True,
-                    fill_color=color,
+                    fill_color='#D50000',
                     fill_opacity=0.9
                 ).add_to(m)
-            else:
-                # النقاط العادية الثابته للخطر المتوسط والمنخفض
+                # إضافة هالة حمراء حول النقطة الحرجة
                 folium.CircleMarker(
                     location=[p['lat'], p['lon']],
-                    radius=6 + (risk / 10), 
-                    popup=popup, 
-                    color=color,
+                    radius=20,
+                    color='#D50000',
+                    weight=1,
                     fill=True,
-                    fill_color=color,
-                    fill_opacity=0.8
+                    fill_color='#D50000',
+                    fill_opacity=0.15
                 ).add_to(m)
+                
+            elif risk >= 30:
+                # ═══🟠 خطر متوسط: نقطة برتقالية متوسطة ═══
+                folium.CircleMarker(
+                    location=[p['lat'], p['lon']],
+                    radius=8,
+                    popup=popup, 
+                    color='#FF6D00',
+                    weight=1.5,
+                    fill=True,
+                    fill_color='#FF6D00',
+                    fill_opacity=0.75
+                ).add_to(m)
+                
+            else:
+                # ═══🟢✅ خطر منخفض: نقطة صغيرة جداً خافتة (ما تلفت الانتباه) ═══
+                folium.CircleMarker(
+                    location=[p['lat'], p['lon']],
+                    radius=3,
+                    popup=popup, 
+                    color='#2A5080',
+                    weight=0.5,
+                    fill=True,
+                    fill_color='#2A5080',
+                    fill_opacity=0.35
+                ).add_to(m)
+
         # ✅ returned_objects=[] بتمنع الـ Rerun لما المستخدم يضغط أو يعمل زوم
         st_folium(m, height=500, use_container_width=True, key="hail_flood_map", returned_objects=[])
 
@@ -778,29 +974,35 @@ def render_dashboard(model, hist_df: pd.DataFrame):
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("🌡 الحرارة", f"{cur_temp:.1f} °م")
-    c2.metric("🌧 الأمطار", f"{cur_rain:.1f} مم")
-    c3.metric("⏱ مجموع 3 ساعات", f"{cur_rain3h:.1f} مم")
-    c4.metric("⏱ مجموع 6 ساعات", f"{cur_rain6h:.1f} مم")
-    c5.metric("💧 الرطوبة", f"{cur_humid:.1f} %")
-    c6.metric("🔵 الضغط الجوي", f"{cur_press:.1f} hPa")
-    
+    c2.metric("🌧 الأمطار الآن", f"{cur_rain:.1f} مم")
+    c3.metric("💧 الرطوبة", f"{cur_humid:.1f} %")
+    c4.metric("🔵 الضغط الجوي", f"{cur_press:.1f} hPa")
+    c5.metric("💨 الرياح", f"{cur_wind:.1f} كم/س")
+    c6.metric("⚠️ أقصى خطر", f"{peak_flood_pct:.1f}%", delta=risk_label(peak_flood_pct))
+
+    # صف ذروة الهطول
+    st.markdown('<div class="section-title">ذروة الهطول خلال الفترة المحددة</div>', unsafe_allow_html=True)
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("⏱ أقصى مطر/ساعة", f"{max_rain:.1f} مم")
+    p2.metric("⏱ أقصى مجموع 3س", f"{max_rain3h:.1f} مم")
+    p3.metric("⏱ أقصى مجموع 6س", f"{max_rain6h:.1f} مم")
+    p4.metric("🌧 مجموع 3س حالي", f"{cur_rain3h:.1f} مم")
+
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Charts ──────────────────────────────────────────────────────────
     g_col, r_col = st.columns([1, 2.6])
     with g_col:
         st.markdown('<div class="section-title">أقصى مخاطر الفيضان (الذروة)</div>', unsafe_allow_html=True)
-        fcolor = risk_color(peak_flood_pct)
-        st.plotly_chart(chart_gauge(peak_flood_pct), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(chart_gauge(peak_flood_pct), use_container_width=True, config={"displayModeBar": "hover"})
         
         pc, wc = st.columns(2)
-        pc.metric("🔵 الضغط الجوي", f"{cur_press:.1f} hPa")
+        pc.metric("🔵 الضغط", f"{cur_press:.1f} hPa")
         wc.metric("💨 الرياح", f"{cur_wind:.1f} كم/س")
 
-        # ═══ ملء الفراغ بإضافة الإجراءات الموصى بها (Recommendations) ═══
         st.markdown('<div class="section-title">📌 الإجراءات الموصى بها</div>', unsafe_allow_html=True)
         if peak_flood_pct >= 80:
-            st.error("🚨 **تنبيه قصوى:** تفعيل صفارات الإنذار، إخلاء الأنفاق فوراً، وتوجيه فرق الدفاع المدني للمناطق المنخفضة.")
+            st.error("🚨 **تنبيه قصوى:** تفعيل صفارات الإنذار، إخلاء الأنفاق فوراً، توجيه فرق الدفاع المدني للمناطق المنخفضة.")
         elif peak_flood_pct >= 60:
             st.warning("⚠️ **إنذار:** استعداد فرق الطوارئ، إغلاق الأنفاق والشوارع المنخفضة بشكل استباقي.")
         elif peak_flood_pct >= 40:
@@ -811,29 +1013,29 @@ def render_dashboard(model, hist_df: pd.DataFrame):
     with r_col:
         st.markdown('<div class="section-title">هطول الأمطار مقابل مخاطر الفيضان</div>', unsafe_allow_html=True)
         if not df_filtered.empty and "flood_pct" in df_filtered.columns:
-            st.plotly_chart(chart_rain_vs_flood(df_filtered), use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(chart_rain_vs_flood(df_filtered), use_container_width=True, config={"displayModeBar": "hover"})
             
     st.markdown('<div class="section-title">الاتجاهات الجوية</div>', unsafe_allow_html=True)
     tc, pc_col = st.columns(2)
     with tc:
-        if not df_filtered.empty: st.plotly_chart(chart_temperature(df_filtered), use_container_width=True, config={"displayModeBar": False})
+        if not df_filtered.empty: st.plotly_chart(chart_temperature(df_filtered), use_container_width=True, config={"displayModeBar": "hover"})
     with pc_col:
-        if not df_filtered.empty: st.plotly_chart(chart_pressure(df_filtered), use_container_width=True, config={"displayModeBar": False})
-    if not df_filtered.empty: st.plotly_chart(chart_wind(df_filtered), use_container_width=True, config={"displayModeBar": False})
+        if not df_filtered.empty: st.plotly_chart(chart_pressure(df_filtered), use_container_width=True, config={"displayModeBar": "hover"})
+    if not df_filtered.empty: st.plotly_chart(chart_wind(df_filtered), use_container_width=True, config={"displayModeBar": "hover"})
 
-    # ── Historical table ────────────────────────────────────────────────
-    st.markdown('<div class="section-title">الأحداث التاريخية عالية المخاطر (احتمالية فيضان ≥ 60%)</div>', unsafe_allow_html=True)
-    flood_col = "flood_pct" if "flood_pct" in combined.columns else "flood_probability_pct"
-    high_risk = combined[combined.get(flood_col, combined.get("flood_pct", pd.Series(dtype=float))) >= 60].copy()
-    if not high_risk.empty:
-        display_cols = ["timestamp", "temp", "rain", "rain_3h", "rain_6h", "humidity", "pressure", "wind_speed", flood_col]
-        display_cols = [c for c in display_cols if c in high_risk.columns]
-        high_risk_show = high_risk[display_cols].tail(50).sort_values("timestamp", ascending=False)
-        rename_map = {"timestamp":"التاريخ", "temp":"الحرارة", "rain":"الأمطار", "rain_3h":"مجموع 3س", "rain_6h":"مجموع 6س", "humidity":"الرطوبة", "pressure":"الضغط", "wind_speed":"الرياح", "flood_pct":"نسبة الخطر %", "flood_probability_pct":"نسبة الخطر %"}
-        high_risk_show = high_risk_show.rename(columns=rename_map)
-        st.dataframe(high_risk_show, use_container_width=True, height=250)
-    else:
-        st.info("لا توجد أحداث عالية المخاطر في البيانات المحملة.")
+    # ═══✅ الجدول التاريخي داخل expander + بدون زرار CSV مكرر ═══
+    with st.expander("📋 الأحداث التاريخية عالية المخاطر (احتمالية فيضان ≥ 60%)"):
+        flood_col = "flood_pct" if "flood_pct" in combined.columns else "flood_probability_pct"
+        high_risk = combined[combined.get(flood_col, combined.get("flood_pct", pd.Series(dtype=float))) >= 60].copy()
+        if not high_risk.empty:
+            display_cols = ["timestamp", "temp", "rain", "rain_3h", "rain_6h", "humidity", "pressure", "wind_speed", flood_col]
+            display_cols = [c for c in display_cols if c in high_risk.columns]
+            high_risk_show = high_risk[display_cols].tail(50).sort_values("timestamp", ascending=False)
+            rename_map = {"timestamp":"التاريخ", "temp":"الحرارة", "rain":"الأمطار", "rain_3h":"مجموع 3س", "rain_6h":"مجموع 6س", "humidity":"الرطوبة", "pressure":"الضغط", "wind_speed":"الرياح", "flood_pct":"نسبة الخطر %", "flood_probability_pct":"نسبة الخطر %"}
+            high_risk_show = high_risk_show.rename(columns=rename_map)
+            st.dataframe(high_risk_show, use_container_width=True, height=250)
+        else:
+            st.info("لا توجد أحداث عالية المخاطر في البيانات المحملة.")
 
     # ── Footer ──────────────────────────────────────────────────────────
     st.markdown("<hr>", unsafe_allow_html=True)

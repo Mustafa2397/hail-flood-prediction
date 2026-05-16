@@ -1,9 +1,14 @@
 streamlit
+plotly
 pandas
 numpy
-plotly
 xgboost
 scikit-learn
 requests
 folium
 streamlit-folium
+geopy
+streamlit-autorefresh
+fpdf2
+arabic_reshaper
+python-bidi
