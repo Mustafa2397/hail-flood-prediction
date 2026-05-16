@@ -356,8 +356,13 @@ def fetch_current_live_data() -> pd.DataFrame:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df["source"] = "Live API"
         return df
-    except Exception as e:
-        st.warning(f"⚠️ تعذر الاتصال بخدمة الأرصاد الجوية: {e}")
+    except requests.exceptions.RequestException:
+        # لو الـ API واقع أو فيه مشكلة نت (زي الـ 502)
+        st.warning("⚠️ تعذر الاتصال بخدمة الأرصاد الجوية اللحظية حالياً. يتم عرض البيانات التاريخية المتاحة.")
+        return pd.DataFrame()
+    except Exception:
+        # لأي خطأ آخر غير متوقع
+        st.warning("⚠️ حدث خطأ غير متوقع في جلب البيانات اللحظية. يتم عرض البيانات التاريخية.")
         return pd.DataFrame()
 
 # ═══════════════════════════════════════════════════════════════════════════
