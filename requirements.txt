@@ -12,3 +12,4 @@ streamlit-autorefresh
 fpdf2
 arabic_reshaper
 python-bidi
+Update
